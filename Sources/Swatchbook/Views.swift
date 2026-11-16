@@ -1,30 +1,57 @@
 import SwiftUI
 import AppKit
 
-// MARK: - Theme
+// MARK: - Theme (colors adapt automatically to Light / Dark)
+
+extension NSColor {
+    convenience init(hexString: String) {
+        let v = Hex.rgb(hexString)
+        self.init(srgbRed: CGFloat(v.r), green: CGFloat(v.g), blue: CGFloat(v.b), alpha: 1)
+    }
+}
+
+extension Color {
+    static func adaptive(dark: String, light: String) -> Color {
+        Color(nsColor: NSColor(name: nil, dynamicProvider: { appearance in
+            let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            return NSColor(hexString: isDark ? dark : light)
+        }))
+    }
+}
+
+extension View {
+    @ViewBuilder
+    func applyIf<Content: View>(_ condition: Bool, transform: (Self) -> Content) -> some View {
+        if condition { transform(self) } else { self }
+    }
+}
 
 enum Theme {
-    static let bg = Color(hex: "121214")
-    static let sidebar = Color(hex: "0D0D0F")
-    static let card = Color.white.opacity(0.05)
-    static let stroke = Color.white.opacity(0.08)
+    static let bg = Color.adaptive(dark: "121214", light: "F6F6F8")
+    static let sidebar = Color.adaptive(dark: "0D0D0F", light: "ECECF0")
+    static let card = Color.adaptive(dark: "1A1A1D", light: "FFFFFF")
+    static let cardHover = Color.adaptive(dark: "232327", light: "EEEEF3")
+    static let toast = Color.adaptive(dark: "2A2A2F", light: "FFFFFF")
+    static let stroke = Color.primary.opacity(0.10)
     static let accent = Color(hex: "FF6363")      // Raycast-style red
-    static let text2 = Color.white.opacity(0.5)
+    static let text2 = Color.primary.opacity(0.5)
 }
 
 struct PillButtonStyle: ButtonStyle {
     var prominent = false
+    @Environment(\.isEnabled) private var isEnabled
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 12, weight: .semibold))
-            .foregroundColor(.white)
+            .foregroundColor(prominent ? Color.white : Color.primary)
             .padding(.horizontal, 12)
             .padding(.vertical, 7)
             .background(
                 RoundedRectangle(cornerRadius: 8)
-                    .fill(prominent ? Theme.accent : Color.white.opacity(configuration.isPressed ? 0.16 : 0.08))
+                    .fill(prominent ? Theme.accent : Color.primary.opacity(configuration.isPressed ? 0.16 : 0.08))
             )
-            .opacity(configuration.isPressed ? 0.85 : 1)
+            .opacity(isEnabled ? (configuration.isPressed ? 0.85 : 1) : 0.4)
     }
 }
 
@@ -32,9 +59,9 @@ struct IconButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 12, weight: .semibold))
-            .foregroundColor(.white.opacity(0.8))
+            .foregroundColor(Color.primary.opacity(0.8))
             .frame(width: 24, height: 24)
-            .background(Circle().fill(Color.white.opacity(configuration.isPressed ? 0.16 : 0.08)))
+            .background(Circle().fill(Color.primary.opacity(configuration.isPressed ? 0.16 : 0.08)))
     }
 }
 
@@ -56,8 +83,8 @@ struct ContentView: View {
             }
         }
         .background(Theme.bg.ignoresSafeArea())
-        .preferredColorScheme(.dark)
         .animation(.spring(response: 0.3, dampingFraction: 0.85), value: store.toast)
+        .onAppear { store.applyAppearance() }
         .sheet(item: $store.editor) { target in
             ColorEditorSheet(target: target)
         }
@@ -87,9 +114,34 @@ struct ToastView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
-        .background(Capsule().fill(Color(hex: "26262A")))
-        .overlay(Capsule().strokeBorder(Color.white.opacity(0.1)))
-        .shadow(color: .black.opacity(0.4), radius: 12, y: 4)
+        .background(Capsule().fill(Theme.toast))
+        .overlay(Capsule().strokeBorder(Theme.stroke))
+        .shadow(color: .black.opacity(0.25), radius: 12, y: 4)
+    }
+}
+
+// MARK: - Settings window (⌘,)
+
+struct SettingsView: View {
+    @EnvironmentObject var store: Store
+
+    var body: some View {
+        Form {
+            Picker("Appearance", selection: $store.appearance) {
+                ForEach(AppearanceMode.allCases) { m in
+                    Text(m.label).tag(m)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            Picker("Click a color to copy as", selection: $store.copyFormat) {
+                ForEach(CopyFormat.allCases) { f in
+                    Text(f.label).tag(f)
+                }
+            }
+        }
+        .padding(24)
+        .frame(width: 440)
     }
 }
 
@@ -120,18 +172,31 @@ struct SidebarView: View {
                             .contentShape(Rectangle())
                             .onTapGesture { store.selectedID = p.id }
                             .contextMenu {
+                                Button(p.locked ? "Unlock" : "Lock") { store.toggleLock(p.id) }
                                 Button("Duplicate") { store.duplicatePalette(p.id) }
+                                Divider()
                                 Button("Delete…") { store.pendingDelete = p.id }
+                                    .disabled(p.locked)
                             }
                     }
                 }
                 .padding(.horizontal, 10)
             }
 
-            Text("⌘N palette  ·  ⇧⌘N color  ·  ⇧⌘P eyedropper")
-                .font(.system(size: 10))
-                .foregroundColor(Theme.text2.opacity(0.7))
-                .padding(14)
+            VStack(alignment: .leading, spacing: 10) {
+                Picker("Appearance", selection: $store.appearance) {
+                    ForEach(AppearanceMode.allCases) { m in
+                        Text(m.label).tag(m)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+
+                Text("⌘N palette  ·  ⇧⌘N color  ·  ⇧⌘P eyedropper")
+                    .font(.system(size: 10))
+                    .foregroundColor(Theme.text2.opacity(0.8))
+            }
+            .padding(14)
         }
         .frame(maxHeight: .infinity)
         .background(Theme.sidebar)
@@ -147,7 +212,7 @@ struct PaletteRow: View {
         HStack(spacing: 10) {
             HStack(spacing: 0) {
                 if palette.colors.isEmpty {
-                    Color.white.opacity(0.1)
+                    Color.primary.opacity(0.1)
                 } else {
                     ForEach(Array(palette.colors.prefix(4))) { c in
                         Color(hex: c.hex)
@@ -156,7 +221,7 @@ struct PaletteRow: View {
             }
             .frame(width: 30, height: 30)
             .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.white.opacity(0.12)))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.12)))
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(palette.name.isEmpty ? "Untitled" : palette.name)
@@ -167,12 +232,17 @@ struct PaletteRow: View {
                     .foregroundColor(Theme.text2)
             }
             Spacer()
+            if palette.locked {
+                Image(systemName: "lock.fill")
+                    .font(.system(size: 10))
+                    .foregroundColor(Theme.text2)
+            }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 7)
         .background(
             RoundedRectangle(cornerRadius: 10)
-                .fill(isSelected ? Color.white.opacity(0.10) : Color.clear)
+                .fill(isSelected ? Color.primary.opacity(0.10) : Color.clear)
         )
     }
 }
@@ -211,50 +281,7 @@ struct PaletteDetail: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                // Header
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        TextField("Palette name", text: store.nameBinding(palette.id))
-                            .textFieldStyle(.plain)
-                            .font(.system(size: 28, weight: .bold))
-                        Text("\(palette.colors.count) color\(palette.colors.count == 1 ? "" : "s")  ·  click a color to copy")
-                            .font(.system(size: 12))
-                            .foregroundColor(Theme.text2)
-                    }
-                    Spacer()
-                    HStack(spacing: 8) {
-                        Menu {
-                            Picker("Copy format", selection: $store.copyFormat) {
-                                ForEach(CopyFormat.allCases) { f in
-                                    Text(f.label).tag(f)
-                                }
-                            }
-                            .pickerStyle(.inline)
-                        } label: {
-                            Text("Copy as \(store.copyFormat.shortLabel)")
-                                .font(.system(size: 12, weight: .semibold))
-                        }
-                        .menuStyle(.borderlessButton)
-                        .fixedSize()
-
-                        Button { store.pickIntoSelected() } label: {
-                            Label("Pick", systemImage: "eyedropper")
-                        }
-                        .buttonStyle(PillButtonStyle())
-                        .help("Pick a color from anywhere on screen (⇧⌘P)")
-
-                        Button { store.addColorToSelected() } label: {
-                            Label("Add Color", systemImage: "plus")
-                        }
-                        .buttonStyle(PillButtonStyle(prominent: true))
-
-                        Button { store.pendingDelete = palette.id } label: {
-                            Image(systemName: "trash")
-                        }
-                        .buttonStyle(PillButtonStyle())
-                        .help("Delete palette")
-                    }
-                }
+                header
 
                 // Combined strip preview
                 if !palette.colors.isEmpty {
@@ -265,21 +292,132 @@ struct PaletteDetail: View {
                     }
                     .frame(height: 64)
                     .clipShape(RoundedRectangle(cornerRadius: 14))
-                    .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.white.opacity(0.10)))
+                    .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.primary.opacity(0.10)))
                 }
 
                 // Color grid
                 LazyVGrid(columns: columns, spacing: 14) {
                     ForEach(palette.colors) { c in
-                        ColorCard(paletteID: palette.id, color: c)
+                        ColorCard(paletteID: palette.id, color: c, locked: palette.locked)
                     }
-                    AddTile()
+                    if !palette.locked {
+                        AddTile()
+                    }
+                }
+
+                // Notes
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Notes")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(Theme.text2)
+                    NotesBox(palette: palette)
                 }
             }
             .padding(.horizontal, 28)
             .padding(.top, 44)
             .padding(.bottom, 28)
         }
+    }
+
+    private var header: some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 4) {
+                if palette.locked {
+                    Text(palette.name.isEmpty ? "Untitled" : palette.name)
+                        .font(.system(size: 28, weight: .bold))
+                        .textSelection(.enabled)
+                } else {
+                    TextField("Palette name", text: store.nameBinding(palette.id))
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 28, weight: .bold))
+                }
+                Text("\(palette.colors.count) color\(palette.colors.count == 1 ? "" : "s")  ·  click a color to copy"
+                     + (palette.locked ? "  ·  locked" : ""))
+                    .font(.system(size: 12))
+                    .foregroundColor(Theme.text2)
+            }
+            Spacer()
+            HStack(spacing: 8) {
+                Menu {
+                    Picker("Copy format", selection: $store.copyFormat) {
+                        ForEach(CopyFormat.allCases) { f in
+                            Text(f.label).tag(f)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                } label: {
+                    Text("Copy as \(store.copyFormat.shortLabel)")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+
+                if !palette.locked {
+                    Button { store.pickIntoSelected() } label: {
+                        Label("Pick", systemImage: "eyedropper")
+                    }
+                    .buttonStyle(PillButtonStyle())
+                    .help("Pick a color from anywhere on screen (⇧⌘P)")
+
+                    Button { store.addColorToSelected() } label: {
+                        Label("Add Color", systemImage: "plus")
+                    }
+                    .buttonStyle(PillButtonStyle(prominent: true))
+                }
+
+                Button { store.toggleLock(palette.id) } label: {
+                    Label(palette.locked ? "Locked" : "Lock",
+                          systemImage: palette.locked ? "lock.fill" : "lock.open")
+                }
+                .buttonStyle(PillButtonStyle())
+                .help(palette.locked ? "Unlock this palette to edit it" : "Lock this palette so it can't be edited")
+
+                if !palette.locked {
+                    Button { store.pendingDelete = palette.id } label: {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(PillButtonStyle())
+                    .help("Delete palette")
+                }
+            }
+        }
+    }
+}
+
+struct NotesBox: View {
+    let palette: Palette
+    @EnvironmentObject var store: Store
+
+    var body: some View {
+        Group {
+            if palette.locked {
+                Text(palette.notes.isEmpty ? "No notes." : palette.notes)
+                    .font(.system(size: 13))
+                    .foregroundColor(palette.notes.isEmpty ? Theme.text2 : Color.primary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                    .frame(minHeight: 80, alignment: .topLeading)
+            } else {
+                ZStack(alignment: .topLeading) {
+                    TextEditor(text: store.notesBinding(palette.id))
+                        .scrollContentBackground(.hidden)
+                        .font(.system(size: 13))
+                        .padding(6)
+                    if palette.notes.isEmpty {
+                        Text("Where do you use this palette? Add any notes here…")
+                            .font(.system(size: 13))
+                            .foregroundColor(Theme.text2)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 14)
+                            .allowsHitTesting(false)
+                    }
+                }
+                .frame(minHeight: 110)
+            }
+        }
+        .background(RoundedRectangle(cornerRadius: 12).fill(Theme.card))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Theme.stroke))
     }
 }
 
@@ -292,12 +430,12 @@ struct AddTile: View {
             Image(systemName: "plus").font(.system(size: 18, weight: .semibold))
             Text("Add color").font(.system(size: 12, weight: .medium))
         }
-        .foregroundColor(hover ? .white : Theme.text2)
+        .foregroundColor(hover ? Color.primary : Theme.text2)
         .frame(maxWidth: .infinity)
         .frame(height: 134)
         .overlay(
             RoundedRectangle(cornerRadius: 14)
-                .strokeBorder(Color.white.opacity(hover ? 0.3 : 0.15),
+                .strokeBorder(Color.primary.opacity(hover ? 0.3 : 0.15),
                               style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
         )
         .contentShape(Rectangle())
@@ -309,6 +447,7 @@ struct AddTile: View {
 struct ColorCard: View {
     let paletteID: UUID
     let color: SwatchColor
+    let locked: Bool
     @EnvironmentObject var store: Store
     @State private var hover = false
 
@@ -317,7 +456,7 @@ struct ColorCard: View {
             RoundedRectangle(cornerRadius: 10)
                 .fill(Color(hex: color.hex))
                 .frame(height: 84)
-                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.white.opacity(0.12)))
+                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.primary.opacity(0.12)))
             VStack(alignment: .leading, spacing: 2) {
                 Text(color.displayName)
                     .font(.system(size: 13, weight: .medium))
@@ -328,7 +467,7 @@ struct ColorCard: View {
             }
         }
         .padding(10)
-        .background(RoundedRectangle(cornerRadius: 14).fill(hover ? Color.white.opacity(0.09) : Theme.card))
+        .background(RoundedRectangle(cornerRadius: 14).fill(hover ? Theme.cardHover : Theme.card))
         .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Theme.stroke))
         .contentShape(Rectangle())
         .onHover { hover = $0 }
@@ -337,13 +476,17 @@ struct ColorCard: View {
             Button("Copy #HEX") { store.copy(color.hex, as: .hex) }
             Button("Copy RGB") { store.copy(color.hex, as: .rgb) }
             Button("Copy HSL") { store.copy(color.hex, as: .hsl) }
-            Divider()
-            Button("Edit…") {
-                store.editor = EditorTarget(paletteID: paletteID, colorID: color.id)
+            if !locked {
+                Divider()
+                Button("Edit…") {
+                    store.editor = EditorTarget(paletteID: paletteID, colorID: color.id)
+                }
+                Button("Delete") { store.removeColor(in: paletteID, colorID: color.id) }
             }
-            Button("Delete") { store.removeColor(in: paletteID, colorID: color.id) }
         }
-        .draggable(color.id.uuidString)
+        .applyIf(!locked) { view in
+            view.draggable(color.id.uuidString)
+        }
         .dropDestination(for: String.self) { items, _ in
             guard let s = items.first, let moving = UUID(uuidString: s) else { return false }
             store.moveColor(in: paletteID, moving: moving, onto: color.id)
@@ -373,7 +516,7 @@ struct ColorEditorSheet: View {
             RoundedRectangle(cornerRadius: 12)
                 .fill(Color(hex: valid ?? "000000"))
                 .frame(height: 110)
-                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.white.opacity(0.12)))
+                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.primary.opacity(0.12)))
 
             field("Name (optional)") {
                 TextField("e.g. Work calendar", text: $name)
@@ -407,13 +550,11 @@ struct ColorEditorSheet: View {
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(PillButtonStyle(prominent: true))
                     .disabled(valid == nil)
-                    .opacity(valid == nil ? 0.4 : 1)
             }
         }
         .padding(22)
         .frame(width: 380)
         .background(Theme.bg)
-        .preferredColorScheme(.dark)
         .onAppear { loadExisting() }
         .onChange(of: picked) { newColor in
             let h = Hex.from(NSColor(newColor))
@@ -451,7 +592,7 @@ struct ColorEditorSheet: View {
             content()
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.06)))
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.06)))
                 .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.stroke))
         }
     }
