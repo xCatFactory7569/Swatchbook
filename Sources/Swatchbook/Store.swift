@@ -649,10 +649,18 @@ final class Store: ObservableObject {
         guard mainWindow !== window else { return }
         mainWindow = window
         applyWindowState()
+        clearFocus()
         if compact {
             applyCompact()
         } else if let content = window.contentView, content.frame.width < 800 {
             window.setContentSize(NSSize(width: 1000, height: 680))
+        }
+    }
+
+    /// Stops the palette name field from grabbing focus (and selecting its text) when the window opens.
+    func clearFocus(after delay: Double = 0.25) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            self?.mainWindow?.makeFirstResponder(nil)
         }
     }
 
@@ -679,6 +687,7 @@ final class Store: ObservableObject {
                 self?.mainWindow?.setContentSize(size)
             }
         }
+        clearFocus(after: 0.3)
     }
 
     // MARK: Background work (backups + system color lists), debounced
