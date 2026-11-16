@@ -57,12 +57,16 @@ struct PillButtonStyle: ButtonStyle {
 }
 
 struct IconButtonStyle: ButtonStyle {
+    var active = false
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 12, weight: .semibold))
-            .foregroundColor(Color.primary.opacity(0.8))
+            .foregroundColor(active ? Color.white : Color.primary.opacity(0.8))
             .frame(width: 24, height: 24)
-            .background(Circle().fill(Color.primary.opacity(configuration.isPressed ? 0.16 : 0.08)))
+            .background(
+                Circle().fill(active ? Theme.accent
+                                     : Color.primary.opacity(configuration.isPressed ? 0.16 : 0.08))
+            )
     }
 }
 
@@ -70,14 +74,19 @@ struct IconButtonStyle: ButtonStyle {
 
 struct ContentView: View {
     @EnvironmentObject var store: Store
+    @Environment(\.undoManager) private var undoManager
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            HStack(spacing: 0) {
-                SidebarView().frame(width: 250)
-                DetailView()
+            if store.compact {
+                CompactView()
+            } else {
+                HStack(spacing: 0) {
+                    SidebarView().frame(width: 250)
+                    DetailView()
+                }
             }
-            if store.showPalette {
+            if store.showPalette && !store.compact {
                 CommandPaletteView()
                     .transition(.opacity)
             }
@@ -90,7 +99,11 @@ struct ContentView: View {
         .background(Theme.bg.ignoresSafeArea())
         .animation(.spring(response: 0.3, dampingFraction: 0.85), value: store.toast)
         .animation(.easeOut(duration: 0.12), value: store.showPalette)
-        .onAppear { store.applyAppearance() }
+        .onAppear {
+            store.applyAppearance()
+            store.undoManager = undoManager
+        }
+        .background(WindowAccessor { window in store.attach(window: window) })
         .sheet(item: $store.editor) { target in
             ColorEditorSheet(target: target)
         }
@@ -129,6 +142,20 @@ struct ToastView: View {
 // MARK: - Settings window (⌘,)
 
 struct SettingsView: View {
+    var body: some View {
+        TabView {
+            GeneralSettings()
+                .tabItem { Label("General", systemImage: "gearshape") }
+            ShortcutSettings()
+                .tabItem { Label("Shortcuts", systemImage: "keyboard") }
+            DataSettings()
+                .tabItem { Label("Backup & Data", systemImage: "externaldrive") }
+        }
+        .frame(width: 620, height: 540)
+    }
+}
+
+struct GeneralSettings: View {
     @EnvironmentObject var store: Store
 
     var body: some View {
@@ -146,28 +173,119 @@ struct SettingsView: View {
                 }
             }
 
-            Divider().padding(.vertical, 6)
+            Toggle("Keep window on top of other apps", isOn: $store.keepOnTop)
+            Toggle("Suggest color names automatically", isOn: $store.autoNames)
+        }
+        .padding(28)
+    }
+}
 
-            Text("Keyboard shortcuts").font(.headline)
+struct ShortcutSettings: View {
+    @EnvironmentObject var store: Store
 
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
             ForEach(ShortcutAction.allCases) { action in
                 HStack {
                     Text(action.label)
+                        .font(.system(size: 15))
                     Spacer()
                     ShortcutRecorder(action: action)
                 }
             }
 
-            HStack {
+            Spacer()
+
+            HStack(alignment: .top) {
                 Text("Click a shortcut, then press the new keys. Esc cancels.")
-                    .font(.caption)
+                    .font(.system(size: 13))
                     .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 Spacer()
                 Button("Restore Defaults") { store.resetShortcuts() }
             }
         }
-        .padding(24)
-        .frame(width: 480)
+        .padding(28)
+    }
+}
+
+struct DataSettings: View {
+    @EnvironmentObject var store: Store
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 26) {
+                // Import / export
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Import & export").font(.headline)
+                    Text("Import palettes from Swatchbook (.json), Adobe (.ase), macOS (.clr) or any text/CSS file with #hex colors.")
+                        .font(.callout)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack {
+                        Button("Import Palettes…") { store.importPalettes() }
+                        Menu("Export All Palettes…") {
+                            ForEach(ExportFormat.allCases) { f in
+                                Button(f.label) { store.exportPalettes(all: true, format: f) }
+                            }
+                        }
+                        .fixedSize()
+                    }
+                }
+
+                Divider()
+
+                // Backups
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Automatic backups").font(.headline)
+                    Text("Each time you edit your palettes, a backup copy is saved in the folder you choose. Once you pass the limit below, the oldest copies are deleted.")
+                        .font(.callout)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    HStack {
+                        Text(store.backupFolderPath.isEmpty ? "No folder chosen" : store.backupFolderPath)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .foregroundColor(store.backupFolderPath.isEmpty ? .secondary : .primary)
+                        Spacer()
+                        Button("Choose Folder…") { store.chooseBackupFolder() }
+                        Button("Show") { store.revealBackupFolder() }
+                            .disabled(store.backupFolderPath.isEmpty)
+                    }
+
+                    Toggle("Back up automatically", isOn: $store.backupEnabled)
+                        .disabled(store.backupFolderPath.isEmpty)
+
+                    Stepper("Keep the last \(store.backupKeep) backups",
+                            value: $store.backupKeep, in: 5...200, step: 5)
+
+                    HStack {
+                        Button("Back Up Now") { store.backUpNow() }
+                            .disabled(store.backupFolderPath.isEmpty)
+                        Button("Restore from Backup…") { store.restoreFromBackup() }
+                        if let d = store.lastBackup {
+                            Text("Last backup: " + d.formatted(date: .omitted, time: .shortened))
+                                .font(.callout)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+
+                Divider()
+
+                // System color picker
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("macOS color picker").font(.headline)
+                    Toggle("Show my palettes in the macOS color picker", isOn: $store.syncSystemColors)
+                    Text("Your palettes appear as color lists (named “Swatchbook – …”) in the Color Palettes tab of every app's color panel. If a list doesn't show up, close and reopen the color panel.")
+                        .font(.callout)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(28)
+        }
     }
 }
 
@@ -214,21 +332,7 @@ struct SidebarView: View {
                 .padding(.horizontal, 10)
             }
 
-            VStack(alignment: .leading, spacing: 10) {
-                Picker("Appearance", selection: $store.appearance) {
-                    ForEach(AppearanceMode.allCases) { m in
-                        Text(m.label).tag(m)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-
-                Text(store.shortcutHint)
-                    .font(.system(size: 10))
-                    .foregroundColor(Theme.text2.opacity(0.8))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(14)
+            Spacer().frame(height: 12)
         }
         .frame(maxHeight: .infinity)
         .background(Theme.sidebar)
@@ -301,6 +405,11 @@ struct DetailView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay(alignment: .topTrailing) {
+            WindowControls()
+                .padding(.top, 10)
+                .padding(.trailing, 16)
+        }
     }
 }
 
@@ -551,7 +660,7 @@ struct ColorEditorSheet: View {
                 .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.primary.opacity(0.12)))
 
             field("Name (optional)") {
-                TextField("e.g. Work calendar", text: $name)
+                TextField(store.autoNames ? ColorNamer.name(for: valid ?? "000000") : "e.g. Work calendar", text: $name)
                     .textFieldStyle(.plain)
             }
 
@@ -585,7 +694,7 @@ struct ColorEditorSheet: View {
             }
         }
         .padding(22)
-        .frame(width: 380)
+        .frame(width: 340)
         .background(Theme.bg)
         .onAppear { loadExisting() }
         .onChange(of: picked) { newColor in
@@ -657,10 +766,12 @@ struct ShortcutRecorder: View {
             Button {
                 if recording { stop() } else { start() }
             } label: {
-                Text(recording ? "Type shortcut…" : (store.shortcuts[action]?.display ?? "None"))
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
-                    .frame(minWidth: 110)
+                Text(recording ? "Type shortcut…" : (store.shortcuts[action]?.spacedDisplay ?? "None"))
+                    .font(.system(size: 17, weight: .semibold))
+                    .tracking(recording ? 0 : 5)
+                    .frame(minWidth: 190, minHeight: 30)
             }
+            .controlSize(.large)
 
             if store.shortcuts[action] != nil && !recording {
                 Button {
@@ -1005,5 +1116,180 @@ struct CreateResultRow: View {
             RoundedRectangle(cornerRadius: 10)
                 .fill(isHighlighted ? Color.primary.opacity(0.10) : Color.clear)
         )
+    }
+}
+
+// MARK: - Window helpers (keep on top, compact view)
+
+struct WindowAccessor: NSViewRepresentable {
+    var onWindow: (NSWindow) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            if let w = view.window { onWindow(w) }
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async {
+            if let w = nsView.window { onWindow(w) }
+        }
+    }
+}
+
+struct WindowControls: View {
+    @EnvironmentObject var store: Store
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Button { store.keepOnTop.toggle() } label: {
+                Image(systemName: store.keepOnTop ? "pin.fill" : "pin")
+            }
+            .buttonStyle(IconButtonStyle(active: store.keepOnTop))
+            .help(store.helpText(store.keepOnTop ? "Stop keeping on top" : "Keep on top of other apps", .keepOnTop))
+
+            Button { store.compact.toggle() } label: {
+                Image(systemName: store.compact
+                      ? "arrow.up.left.and.arrow.down.right"
+                      : "arrow.down.right.and.arrow.up.left")
+            }
+            .buttonStyle(IconButtonStyle())
+            .help(store.helpText(store.compact ? "Back to full view" : "Compact view", .compactView))
+        }
+    }
+}
+
+// MARK: - Compact view (small panel to keep next to other apps)
+
+struct CompactView: View {
+    @EnvironmentObject var store: Store
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Spacer().frame(width: 62)          // room for the window buttons
+
+                Button { store.pickIntoSelected() } label: { Image(systemName: "eyedropper") }
+                    .buttonStyle(IconButtonStyle())
+                    .help(store.helpText("Pick a color from the screen", .eyedropper))
+
+                Button { store.addColorToSelected() } label: { Image(systemName: "plus") }
+                    .buttonStyle(IconButtonStyle())
+                    .help(store.helpText("Add a color to the selected palette", .addColor))
+
+                Spacer()
+
+                Menu {
+                    Picker("Copy format", selection: $store.copyFormat) {
+                        ForEach(CopyFormat.allCases) { f in
+                            Text(f.label).tag(f)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                } label: {
+                    Text(store.copyFormat.shortLabel)
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+
+                WindowControls()
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
+            .padding(.bottom, 10)
+
+            Rectangle().fill(Theme.stroke).frame(height: 1)
+
+            ScrollView {
+                LazyVStack(spacing: 14) {
+                    ForEach(store.palettes) { p in
+                        CompactPaletteRow(palette: p, isCurrent: p.id == store.selectedID)
+                    }
+                    if store.palettes.isEmpty {
+                        Button("New Palette") { store.addPalette() }
+                            .buttonStyle(PillButtonStyle(prominent: true))
+                            .padding(.top, 30)
+                    }
+                }
+                .padding(14)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+struct CompactPaletteRow: View {
+    let palette: Palette
+    let isCurrent: Bool
+    @EnvironmentObject var store: Store
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 8) {
+                Image(systemName: isCurrent ? "circle.inset.filled" : "circle")
+                    .font(.system(size: 11))
+                    .foregroundColor(isCurrent ? Theme.accent : Theme.text2)
+                Text(palette.name.isEmpty ? "Untitled" : palette.name)
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(1)
+                if palette.locked {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 9))
+                        .foregroundColor(Theme.text2)
+                }
+                Spacer()
+            }
+            .contentShape(Rectangle())
+            .onTapGesture { store.selectedID = palette.id }
+
+            HStack(spacing: 0) {
+                if palette.colors.isEmpty {
+                    Text("No colors yet")
+                        .font(.system(size: 11))
+                        .foregroundColor(Theme.text2)
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                } else {
+                    ForEach(palette.colors) { c in
+                        CompactSwatch(color: c)
+                    }
+                }
+            }
+            .background(Color.primary.opacity(0.06))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.stroke))
+        }
+        .contextMenu {
+            Button("Add Color…") {
+                store.selectedID = palette.id
+                store.addColorToSelected()
+            }
+            Button(palette.locked ? "Unlock" : "Lock") { store.toggleLock(palette.id) }
+            Button("Duplicate") { store.duplicatePalette(palette.id) }
+        }
+    }
+}
+
+struct CompactSwatch: View {
+    let color: SwatchColor
+    @EnvironmentObject var store: Store
+    @State private var hover = false
+
+    var body: some View {
+        Color(hex: color.hex)
+            .frame(maxWidth: .infinity)
+            .frame(height: 44)
+            .overlay(Color.white.opacity(hover ? 0.18 : 0))
+            .contentShape(Rectangle())
+            .onHover { hover = $0 }
+            .onTapGesture { store.copy(color.hex) }
+            .help("\(color.displayName)  #\(color.hex)")
+            .contextMenu {
+                Button("Copy #HEX") { store.copy(color.hex, as: .hex) }
+                Button("Copy RGB") { store.copy(color.hex, as: .rgb) }
+                Button("Copy HSL") { store.copy(color.hex, as: .hsl) }
+            }
     }
 }
