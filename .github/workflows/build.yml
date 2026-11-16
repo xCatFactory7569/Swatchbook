@@ -20,12 +20,20 @@ jobs:
       - name: Build (Intel, release)
         run: swift build -c release --arch x86_64
 
+      - name: Make the app icon
+        run: |
+          mkdir -p build
+          swiftc scripts/make_icon.swift -o build/make_icon
+          ./build/make_icon build/AppIcon.iconset
+          iconutil -c icns build/AppIcon.iconset -o build/AppIcon.icns
+
       - name: Create the .app bundle
         run: |
           APP="build/Swatchbook.app"
           BIN_DIR="$(swift build -c release --arch x86_64 --show-bin-path)"
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
           cp "$BIN_DIR/Swatchbook" "$APP/Contents/MacOS/Swatchbook"
+          cp build/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
           cat > "$APP/Contents/Info.plist" <<'EOF'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -35,9 +43,10 @@ jobs:
             <key>CFBundleDisplayName</key><string>Swatchbook</string>
             <key>CFBundleIdentifier</key><string>com.local.swatchbook</string>
             <key>CFBundleExecutable</key><string>Swatchbook</string>
+            <key>CFBundleIconFile</key><string>AppIcon</string>
             <key>CFBundlePackageType</key><string>APPL</string>
-            <key>CFBundleShortVersionString</key><string>1.0</string>
-            <key>CFBundleVersion</key><string>1</string>
+            <key>CFBundleShortVersionString</key><string>1.1</string>
+            <key>CFBundleVersion</key><string>2</string>
             <key>LSMinimumSystemVersion</key><string>13.0</string>
             <key>LSApplicationCategoryType</key><string>public.app-category.graphics-design</string>
             <key>NSHighResolutionCapable</key><true/>
@@ -56,3 +65,10 @@ jobs:
           name: Swatchbook-for-Intel-Mac
           path: build/Swatchbook.zip
           retention-days: 90
+
+      - name: Upload an icon preview picture
+        uses: actions/upload-artifact@v4
+        with:
+          name: Icon-preview
+          path: build/AppIcon.iconset/icon_512x512.png
+          retention-days: 30
