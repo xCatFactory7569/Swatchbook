@@ -32,6 +32,7 @@ enum Theme {
     static let card = Color.adaptive(dark: "1A1A1D", light: "FFFFFF")
     static let cardHover = Color.adaptive(dark: "232327", light: "EEEEF3")
     static let toast = Color.adaptive(dark: "2A2A2F", light: "FFFFFF")
+    static let panel = Color.adaptive(dark: "1C1C20", light: "FFFFFF")
     static let stroke = Color.primary.opacity(0.10)
     static let accent = Color(hex: "FF6363")      // Raycast-style red
     static let text2 = Color.primary.opacity(0.5)
@@ -76,6 +77,10 @@ struct ContentView: View {
                 SidebarView().frame(width: 250)
                 DetailView()
             }
+            if store.showPalette {
+                CommandPaletteView()
+                    .transition(.opacity)
+            }
             if let t = store.toast {
                 ToastView(text: t)
                     .padding(.bottom, 24)
@@ -84,6 +89,7 @@ struct ContentView: View {
         }
         .background(Theme.bg.ignoresSafeArea())
         .animation(.spring(response: 0.3, dampingFraction: 0.85), value: store.toast)
+        .animation(.easeOut(duration: 0.12), value: store.showPalette)
         .onAppear { store.applyAppearance() }
         .sheet(item: $store.editor) { target in
             ColorEditorSheet(target: target)
@@ -139,9 +145,29 @@ struct SettingsView: View {
                     Text(f.label).tag(f)
                 }
             }
+
+            Divider().padding(.vertical, 6)
+
+            Text("Keyboard shortcuts").font(.headline)
+
+            ForEach(ShortcutAction.allCases) { action in
+                HStack {
+                    Text(action.label)
+                    Spacer()
+                    ShortcutRecorder(action: action)
+                }
+            }
+
+            HStack {
+                Text("Click a shortcut, then press the new keys. Esc cancels.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Spacer()
+                Button("Restore Defaults") { store.resetShortcuts() }
+            }
         }
         .padding(24)
-        .frame(width: 440)
+        .frame(width: 480)
     }
 }
 
@@ -157,9 +183,14 @@ struct SidebarView: View {
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(Theme.text2)
                 Spacer()
-                Button { store.addPalette() } label: { Image(systemName: "plus") }
-                    .buttonStyle(IconButtonStyle())
-                    .help("New Palette (⌘N)")
+                HStack(spacing: 6) {
+                    Button { store.showPalette = true } label: { Image(systemName: "magnifyingglass") }
+                        .buttonStyle(IconButtonStyle())
+                        .help(store.helpText("Browse palettes", .commandPalette))
+                    Button { store.addPalette() } label: { Image(systemName: "plus") }
+                        .buttonStyle(IconButtonStyle())
+                        .help(store.helpText("New palette", .newPalette))
+                }
             }
             .padding(.top, 42)
             .padding(.horizontal, 16)
@@ -192,9 +223,10 @@ struct SidebarView: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
 
-                Text("⌘N palette  ·  ⇧⌘N color  ·  ⇧⌘P eyedropper")
+                Text(store.shortcutHint)
                     .font(.system(size: 10))
                     .foregroundColor(Theme.text2.opacity(0.8))
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .padding(14)
         }
@@ -357,7 +389,7 @@ struct PaletteDetail: View {
                         Label("Pick", systemImage: "eyedropper")
                     }
                     .buttonStyle(PillButtonStyle())
-                    .help("Pick a color from anywhere on screen (⇧⌘P)")
+                    .help(store.helpText("Pick a color from anywhere on screen", .eyedropper))
 
                     Button { store.addColorToSelected() } label: {
                         Label("Add Color", systemImage: "plus")
@@ -595,5 +627,383 @@ struct ColorEditorSheet: View {
                 .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.06)))
                 .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.stroke))
         }
+    }
+}
+
+// MARK: - Menu shortcut helper
+
+extension View {
+    /// Applies a user-customizable keyboard shortcut (or none, if it was cleared).
+    @ViewBuilder
+    func appShortcut(_ spec: ShortcutSpec?) -> some View {
+        if let spec = spec, let key = spec.keyEquivalent {
+            self.keyboardShortcut(key, modifiers: spec.modifiers)
+        } else {
+            self
+        }
+    }
+}
+
+// MARK: - Shortcut recorder (used in Settings)
+
+struct ShortcutRecorder: View {
+    let action: ShortcutAction
+    @EnvironmentObject var store: Store
+    @State private var recording = false
+    @State private var monitor: Any?
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Button {
+                if recording { stop() } else { start() }
+            } label: {
+                Text(recording ? "Type shortcut…" : (store.shortcuts[action]?.display ?? "None"))
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .frame(minWidth: 110)
+            }
+
+            if store.shortcuts[action] != nil && !recording {
+                Button {
+                    store.setShortcut(nil, for: action)
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(.secondary)
+                .help("Clear this shortcut")
+            }
+        }
+        .onDisappear { stop() }
+    }
+
+    private func start() {
+        recording = true
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            // Escape cancels
+            if event.keyCode == 53 {
+                stop()
+                return nil
+            }
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            let hasModifier = flags.contains(.command) || flags.contains(.control) || flags.contains(.option)
+            guard hasModifier,
+                  let chars = event.charactersIgnoringModifiers?.lowercased(),
+                  let scalar = chars.unicodeScalars.first,
+                  !(0xF700...0xF8FF).contains(Int(scalar.value)) else {
+                return nil   // ignore keys without a modifier, arrows, etc.
+            }
+            let spec = ShortcutSpec(key: String(chars.prefix(1)),
+                                    command: flags.contains(.command),
+                                    shift: flags.contains(.shift),
+                                    option: flags.contains(.option),
+                                    control: flags.contains(.control))
+            store.setShortcut(spec, for: action)
+            stop()
+            return nil
+        }
+    }
+
+    private func stop() {
+        if let m = monitor { NSEvent.removeMonitor(m) }
+        monitor = nil
+        recording = false
+    }
+}
+
+// MARK: - Command palette (browse palettes)
+
+struct CommandPaletteView: View {
+    @EnvironmentObject var store: Store
+    @State private var query = ""
+    @State private var highlighted = 0
+    @State private var monitor: Any?
+    @FocusState private var focused: Bool
+
+    private var trimmed: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    private func matches(_ p: Palette, _ q: String) -> Bool {
+        if p.name.lowercased().contains(q) { return true }
+        if p.notes.lowercased().contains(q) { return true }
+        let hexQ = q.replacingOccurrences(of: "#", with: "")
+        for c in p.colors {
+            if c.name.lowercased().contains(q) { return true }
+            if !hexQ.isEmpty && c.hex.lowercased().contains(hexQ) { return true }
+        }
+        return false
+    }
+
+    private var results: [Palette] {
+        let q = trimmed.lowercased()
+        let ranked = store.rankedPalettes
+        if q.isEmpty { return ranked }
+        return ranked.filter { matches($0, q) }
+    }
+
+    private var createName: String? {
+        guard !trimmed.isEmpty else { return nil }
+        let exists = store.palettes.contains { $0.name.lowercased() == trimmed.lowercased() }
+        return exists ? nil : trimmed
+    }
+
+    private var rowCount: Int { results.count + (createName == nil ? 0 : 1) }
+
+    var body: some View {
+        ZStack(alignment: .top) {
+            // Invisible layer: clicking outside the panel closes it
+            Color.clear
+                .contentShape(Rectangle())
+                .ignoresSafeArea()
+                .onTapGesture { close() }
+
+            VStack(spacing: 0) {
+                TextField("Search for palettes…", text: $query)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 18))
+                    .focused($focused)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 18)
+
+                Rectangle().fill(Theme.stroke).frame(height: 1)
+
+                HStack {
+                    Text("Palettes")
+                        .font(.system(size: 13, weight: .semibold))
+                    Spacer()
+                    Text("\(results.count)/\(store.palettes.count) Palettes")
+                        .font(.system(size: 13, weight: .semibold))
+                    Image(systemName: "info.circle")
+                        .font(.system(size: 13))
+                        .help("↑ ↓ to move, Return to open, Esc to close. Pinned palettes stay at the top.")
+                }
+                .foregroundColor(Theme.text2)
+                .padding(.horizontal, 20)
+                .padding(.top, 14)
+                .padding(.bottom, 6)
+
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(spacing: 2) {
+                            ForEach(Array(results.enumerated()), id: \.element.id) { index, p in
+                                PaletteResultRow(
+                                    palette: p,
+                                    isHighlighted: index == highlighted,
+                                    isCurrent: p.id == store.selectedID,
+                                    onPin: {
+                                        store.togglePin(p.id)
+                                        if let newIndex = results.firstIndex(where: { $0.id == p.id }) {
+                                            highlighted = newIndex
+                                        }
+                                    },
+                                    onDelete: {
+                                        close()
+                                        store.pendingDelete = p.id
+                                    }
+                                )
+                                .id(index)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    highlighted = index
+                                    activate()
+                                }
+                            }
+                            if let name = createName {
+                                CreateResultRow(name: name, isHighlighted: highlighted == results.count)
+                                    .id(results.count)
+                                    .contentShape(Rectangle())
+                                    .onTapGesture {
+                                        highlighted = results.count
+                                        activate()
+                                    }
+                            }
+                            if rowCount == 0 {
+                                Text("No palettes yet. Type a name to create one.")
+                                    .font(.system(size: 13))
+                                    .foregroundColor(Theme.text2)
+                                    .padding(24)
+                            }
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.bottom, 8)
+                    }
+                    .frame(height: min(330, max(CGFloat(rowCount), 1) * 58 + 12))
+                    .onChange(of: highlighted) { newValue in
+                        withAnimation(.easeOut(duration: 0.1)) {
+                            proxy.scrollTo(newValue)
+                        }
+                    }
+                }
+
+                Rectangle().fill(Theme.stroke).frame(height: 1)
+
+                HStack(spacing: 14) {
+                    Text("↵ Open")
+                    Text("↑↓ Navigate")
+                    Text("esc Close")
+                    Spacer()
+                }
+                .font(.system(size: 11))
+                .foregroundColor(Theme.text2)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 10)
+            }
+            .frame(width: 520)
+            .background(RoundedRectangle(cornerRadius: 14).fill(Theme.panel))
+            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Theme.stroke))
+            .shadow(color: .black.opacity(0.30), radius: 28, y: 10)
+            .padding(.top, 70)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear { start() }
+        .onDisappear { stop() }
+        .onChange(of: query) { _ in highlighted = 0 }
+    }
+
+    private func start() {
+        DispatchQueue.main.async { focused = true }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            switch event.keyCode {
+            case 125: move(1); return nil          // down arrow
+            case 126: move(-1); return nil         // up arrow
+            case 36, 76: activate(); return nil    // return / enter
+            case 53: close(); return nil           // escape
+            default: return event
+            }
+        }
+    }
+
+    private func stop() {
+        if let m = monitor { NSEvent.removeMonitor(m) }
+        monitor = nil
+    }
+
+    private func move(_ delta: Int) {
+        guard rowCount > 0 else { return }
+        highlighted = max(0, min(rowCount - 1, highlighted + delta))
+    }
+
+    private func activate() {
+        let r = results
+        if highlighted < r.count {
+            store.selectedID = r[highlighted].id
+        } else if let name = createName {
+            store.createPalette(named: name)
+        }
+        close()
+    }
+
+    private func close() {
+        store.showPalette = false
+    }
+}
+
+struct PaletteResultRow: View {
+    let palette: Palette
+    let isHighlighted: Bool
+    let isCurrent: Bool
+    let onPin: () -> Void
+    let onDelete: () -> Void
+
+    private var openedText: String {
+        guard let d = palette.lastOpened else { return "Not opened yet" }
+        if Date().timeIntervalSince(d) < 86_400 { return "Opened recently" }
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .full
+        return "Opened " + f.localizedString(for: d, relativeTo: Date())
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            HStack(spacing: 0) {
+                if palette.colors.isEmpty {
+                    Color.primary.opacity(0.1)
+                } else {
+                    ForEach(Array(palette.colors.prefix(4))) { c in
+                        Color(hex: c.hex)
+                    }
+                }
+            }
+            .frame(width: 34, height: 34)
+            .clipShape(RoundedRectangle(cornerRadius: 9))
+            .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(Color.primary.opacity(0.12)))
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(palette.name.isEmpty ? "Untitled" : palette.name)
+                    .font(.system(size: 15, weight: .medium))
+                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    if isCurrent {
+                        Circle().fill(Theme.accent).frame(width: 7, height: 7)
+                        Text("Current")
+                    } else {
+                        Text(openedText)
+                    }
+                    Text("•")
+                    Text("\(palette.colors.count) color\(palette.colors.count == 1 ? "" : "s")")
+                }
+                .font(.system(size: 12))
+                .foregroundColor(Theme.text2)
+                .lineLimit(1)
+            }
+
+            Spacer()
+
+            if palette.locked {
+                Image(systemName: "lock.fill")
+                    .font(.system(size: 11))
+                    .foregroundColor(Theme.text2)
+            }
+
+            if isHighlighted {
+                Button(action: onPin) {
+                    Image(systemName: palette.pinned ? "pin.fill" : "pin")
+                }
+                .buttonStyle(.plain)
+                .help(palette.pinned ? "Unpin" : "Pin to top")
+
+                Button(action: onDelete) {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.plain)
+                .disabled(palette.locked)
+                .opacity(palette.locked ? 0.3 : 1)
+                .help(palette.locked ? "Unlock this palette to delete it" : "Delete palette")
+            } else if palette.pinned {
+                Image(systemName: "pin.fill")
+                    .font(.system(size: 11))
+                    .foregroundColor(Theme.text2)
+            }
+        }
+        .font(.system(size: 14))
+        .foregroundColor(Color.primary.opacity(0.75))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(isHighlighted ? Color.primary.opacity(0.10) : Color.clear)
+        )
+    }
+}
+
+struct CreateResultRow: View {
+    let name: String
+    let isHighlighted: Bool
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "plus.circle.fill")
+                .font(.system(size: 22))
+                .foregroundColor(Theme.accent)
+                .frame(width: 34, height: 34)
+            Text("Create palette “\(name)”")
+                .font(.system(size: 15, weight: .medium))
+                .lineLimit(1)
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(isHighlighted ? Color.primary.opacity(0.10) : Color.clear)
+        )
     }
 }
