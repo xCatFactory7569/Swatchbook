@@ -20,11 +20,14 @@ struct SwatchbookApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("New Palette") { store.addPalette() }
-                    .keyboardShortcut("n", modifiers: [.command])
+                    .appShortcut(store.shortcuts[.newPalette])
                 Button("Add Color…") { store.addColorToSelected() }
-                    .keyboardShortcut("n", modifiers: [.command, .shift])
+                    .appShortcut(store.shortcuts[.addColor])
                 Button("Pick Color from Screen") { store.pickIntoSelected() }
-                    .keyboardShortcut("p", modifiers: [.command, .shift])
+                    .appShortcut(store.shortcuts[.eyedropper])
+                Divider()
+                Button("Browse Palettes…") { store.showPalette.toggle() }
+                    .appShortcut(store.shortcuts[.commandPalette])
             }
         }
 
