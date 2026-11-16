@@ -27,5 +27,10 @@ struct SwatchbookApp: App {
                     .keyboardShortcut("p", modifiers: [.command, .shift])
             }
         }
+
+        Settings {
+            SettingsView()
+                .environmentObject(store)
+        }
     }
 }
