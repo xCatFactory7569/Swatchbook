@@ -460,66 +460,112 @@ struct PaletteDetail: View {
         }
     }
 
-    private var header: some View {
-        HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 4) {
-                if palette.locked {
-                    Text(palette.name.isEmpty ? "Untitled" : palette.name)
-                        .font(.system(size: 28, weight: .bold))
-                        .textSelection(.enabled)
-                } else {
-                    TextField("Palette name", text: store.nameBinding(palette.id))
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 28, weight: .bold))
-                }
-                Text("\(palette.colors.count) color\(palette.colors.count == 1 ? "" : "s")  ·  click a color to copy"
-                     + (palette.locked ? "  ·  locked" : ""))
-                    .font(.system(size: 12))
-                    .foregroundColor(Theme.text2)
+    // MARK: Header (adapts to the window width)
+
+    private var subtitle: String {
+        "\(palette.colors.count) color\(palette.colors.count == 1 ? "" : "s")  ·  click a color to copy"
+            + (palette.locked ? "  ·  locked" : "")
+    }
+
+    /// Palette name + subtitle. Flexible in width, but reports a sensible ideal width
+    /// so `ViewThatFits` below can tell which layout fits.
+    private var titleBlock: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if palette.locked {
+                Text(palette.name.isEmpty ? "Untitled" : palette.name)
+                    .font(.system(size: 28, weight: .bold))
+                    .lineLimit(1)
+                    .textSelection(.enabled)
+            } else {
+                TextField("Palette name", text: store.nameBinding(palette.id))
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 28, weight: .bold))
             }
-            Spacer()
-            HStack(spacing: 8) {
-                Menu {
-                    Picker("Copy format", selection: $store.copyFormat) {
-                        ForEach(CopyFormat.allCases) { f in
-                            Text(f.label).tag(f)
-                        }
+            Text(subtitle)
+                .font(.system(size: 12))
+                .foregroundColor(Theme.text2)
+                .lineLimit(1)
+        }
+        .frame(minWidth: 120, idealWidth: 260, maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func pillLabel(_ title: String, _ icon: String, iconOnly: Bool) -> some View {
+        if iconOnly {
+            Image(systemName: icon)
+        } else {
+            Label(title, systemImage: icon)
+        }
+    }
+
+    private func actionButtons(iconOnly: Bool) -> some View {
+        HStack(spacing: 8) {
+            Menu {
+                Picker("Copy format", selection: $store.copyFormat) {
+                    ForEach(CopyFormat.allCases) { f in
+                        Text(f.label).tag(f)
                     }
-                    .pickerStyle(.inline)
-                } label: {
-                    Text("Copy as \(store.copyFormat.shortLabel)")
-                        .font(.system(size: 12, weight: .semibold))
                 }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
+                .pickerStyle(.inline)
+            } label: {
+                Text(iconOnly ? store.copyFormat.shortLabel : "Copy as \(store.copyFormat.shortLabel)")
+                    .font(.system(size: 12, weight: .semibold))
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
 
-                if !palette.locked {
-                    Button { store.pickIntoSelected() } label: {
-                        Label("Pick", systemImage: "eyedropper")
-                    }
-                    .buttonStyle(PillButtonStyle())
-                    .help(store.helpText("Pick a color from anywhere on screen", .eyedropper))
-
-                    Button { store.addColorToSelected() } label: {
-                        Label("Add Color", systemImage: "plus")
-                    }
-                    .buttonStyle(PillButtonStyle(prominent: true))
-                }
-
-                Button { store.toggleLock(palette.id) } label: {
-                    Label(palette.locked ? "Locked" : "Lock",
-                          systemImage: palette.locked ? "lock.fill" : "lock.open")
+            if !palette.locked {
+                Button { store.pickIntoSelected() } label: {
+                    pillLabel("Pick", "eyedropper", iconOnly: iconOnly)
                 }
                 .buttonStyle(PillButtonStyle())
-                .help(palette.locked ? "Unlock this palette to edit it" : "Lock this palette so it can't be edited")
+                .fixedSize()
+                .help(store.helpText("Pick a color from anywhere on screen", .eyedropper))
 
-                if !palette.locked {
-                    Button { store.pendingDelete = palette.id } label: {
-                        Image(systemName: "trash")
-                    }
-                    .buttonStyle(PillButtonStyle())
-                    .help("Delete palette")
+                Button { store.addColorToSelected() } label: {
+                    pillLabel("Add Color", "plus", iconOnly: iconOnly)
                 }
+                .buttonStyle(PillButtonStyle(prominent: true))
+                .fixedSize()
+                .help(store.helpText("Add a color", .addColor))
+            }
+
+            Button { store.toggleLock(palette.id) } label: {
+                pillLabel(palette.locked ? "Locked" : "Lock",
+                          palette.locked ? "lock.fill" : "lock.open",
+                          iconOnly: iconOnly)
+            }
+            .buttonStyle(PillButtonStyle())
+            .fixedSize()
+            .help(palette.locked ? "Unlock this palette to edit it" : "Lock this palette so it can't be edited")
+
+            if !palette.locked {
+                Button { store.pendingDelete = palette.id } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(PillButtonStyle())
+                .fixedSize()
+                .help("Delete palette")
+            }
+        }
+    }
+
+    private var header: some View {
+        ViewThatFits(in: .horizontal) {
+            // 1. Wide window: everything on one row
+            HStack(alignment: .top, spacing: 12) {
+                titleBlock
+                actionButtons(iconOnly: false)
+            }
+            // 2. Narrower: buttons move under the title
+            VStack(alignment: .leading, spacing: 14) {
+                titleBlock
+                actionButtons(iconOnly: false)
+            }
+            // 3. Very narrow: icon-only buttons under the title
+            VStack(alignment: .leading, spacing: 14) {
+                titleBlock
+                actionButtons(iconOnly: true)
             }
         }
     }
