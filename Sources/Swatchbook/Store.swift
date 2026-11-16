@@ -50,6 +50,27 @@ struct Palette: Identifiable, Codable, Hashable {
     var id = UUID()
     var name: String
     var colors: [SwatchColor] = []
+    var notes: String = ""
+    var locked: Bool = false
+
+    init(name: String, colors: [SwatchColor] = [], notes: String = "", locked: Bool = false) {
+        self.name = name
+        self.colors = colors
+        self.notes = notes
+        self.locked = locked
+    }
+
+    enum CodingKeys: String, CodingKey { case id, name, colors, notes, locked }
+
+    // Custom decoding so palettes saved by the older version (without notes/locked) still load.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? "Untitled"
+        colors = try c.decodeIfPresent([SwatchColor].self, forKey: .colors) ?? []
+        notes = try c.decodeIfPresent(String.self, forKey: .notes) ?? ""
+        locked = try c.decodeIfPresent(Bool.self, forKey: .locked) ?? false
+    }
 }
 
 enum CopyFormat: String, CaseIterable, Identifiable {
@@ -98,6 +119,27 @@ enum CopyFormat: String, CaseIterable, Identifiable {
     }
 }
 
+enum AppearanceMode: String, CaseIterable, Identifiable {
+    case system, light, dark
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .system: return "System"
+        case .light: return "Light"
+        case .dark: return "Dark"
+        }
+    }
+
+    var nsAppearance: NSAppearance? {
+        switch self {
+        case .system: return nil
+        case .light: return NSAppearance(named: .aqua)
+        case .dark: return NSAppearance(named: .darkAqua)
+        }
+    }
+}
+
 struct EditorTarget: Identifiable {
     let id = UUID()
     let paletteID: UUID
@@ -115,6 +157,12 @@ final class Store: ObservableObject {
     @Published var copyFormat: CopyFormat = .hex {
         didSet { UserDefaults.standard.set(copyFormat.rawValue, forKey: "copyFormat") }
     }
+    @Published var appearance: AppearanceMode = .dark {
+        didSet {
+            UserDefaults.standard.set(appearance.rawValue, forKey: "appearance")
+            applyAppearance()
+        }
+    }
 
     private let fileURL: URL
     private let sampler = NSColorSampler()
@@ -130,6 +178,10 @@ final class Store: ObservableObject {
         if let raw = UserDefaults.standard.string(forKey: "copyFormat"),
            let f = CopyFormat(rawValue: raw) {
             copyFormat = f
+        }
+        if let raw = UserDefaults.standard.string(forKey: "appearance"),
+           let a = AppearanceMode(rawValue: raw) {
+            appearance = a
         }
 
         if FileManager.default.fileExists(atPath: fileURL.path) {
@@ -148,6 +200,11 @@ final class Store: ObservableObject {
             save()
         }
         selectedID = palettes.first?.id
+        applyAppearance()
+    }
+
+    func applyAppearance() {
+        NSApplication.shared.appearance = appearance.nsAppearance
     }
 
     private func save() {
@@ -162,12 +219,29 @@ final class Store: ObservableObject {
 
     var selected: Palette? { palettes.first { $0.id == selectedID } }
 
+    func isLocked(_ id: UUID) -> Bool {
+        palettes.first { $0.id == id }?.locked ?? false
+    }
+
     func nameBinding(_ id: UUID) -> Binding<String> {
         Binding(
             get: { self.palettes.first { $0.id == id }?.name ?? "" },
             set: { newValue in
-                if let i = self.palettes.firstIndex(where: { $0.id == id }) {
+                if let i = self.palettes.firstIndex(where: { $0.id == id }),
+                   !self.palettes[i].locked {
                     self.palettes[i].name = newValue
+                }
+            }
+        )
+    }
+
+    func notesBinding(_ id: UUID) -> Binding<String> {
+        Binding(
+            get: { self.palettes.first { $0.id == id }?.notes ?? "" },
+            set: { newValue in
+                if let i = self.palettes.firstIndex(where: { $0.id == id }),
+                   !self.palettes[i].locked {
+                    self.palettes[i].notes = newValue
                 }
             }
         )
@@ -183,41 +257,52 @@ final class Store: ObservableObject {
 
     func duplicatePalette(_ id: UUID) {
         guard let p = palettes.first(where: { $0.id == id }) else { return }
-        var copy = Palette(name: p.name + " Copy")
+        var copy = Palette(name: p.name + " Copy", notes: p.notes)
         copy.colors = p.colors.map { SwatchColor(name: $0.name, hex: $0.hex) }
         palettes.append(copy)
         selectedID = copy.id
     }
 
-    func deletePalette(_ id: UUID) {
+    func toggleLock(_ id: UUID) {
         guard let i = palettes.firstIndex(where: { $0.id == id }) else { return }
+        palettes[i].locked.toggle()
+        showToast(palettes[i].locked ? "Palette locked" : "Palette unlocked")
+    }
+
+    func deletePalette(_ id: UUID) {
+        guard let i = palettes.firstIndex(where: { $0.id == id }),
+              !palettes[i].locked else { return }
         palettes.remove(at: i)
         if selectedID == id {
             selectedID = palettes.isEmpty ? nil : palettes[min(i, palettes.count - 1)].id
         }
     }
 
-    // MARK: Color actions
+    // MARK: Color actions (all refuse to touch a locked palette)
 
     func addColor(to paletteID: UUID, hex: String, name: String) {
-        guard let i = palettes.firstIndex(where: { $0.id == paletteID }) else { return }
+        guard let i = palettes.firstIndex(where: { $0.id == paletteID }),
+              !palettes[i].locked else { return }
         palettes[i].colors.append(SwatchColor(name: name, hex: hex))
     }
 
     func updateColor(in paletteID: UUID, colorID: UUID, hex: String, name: String) {
         guard let i = palettes.firstIndex(where: { $0.id == paletteID }),
+              !palettes[i].locked,
               let j = palettes[i].colors.firstIndex(where: { $0.id == colorID }) else { return }
         palettes[i].colors[j].hex = hex
         palettes[i].colors[j].name = name
     }
 
     func removeColor(in paletteID: UUID, colorID: UUID) {
-        guard let i = palettes.firstIndex(where: { $0.id == paletteID }) else { return }
+        guard let i = palettes.firstIndex(where: { $0.id == paletteID }),
+              !palettes[i].locked else { return }
         palettes[i].colors.removeAll { $0.id == colorID }
     }
 
     func moveColor(in paletteID: UUID, moving: UUID, onto target: UUID) {
         guard let i = palettes.firstIndex(where: { $0.id == paletteID }),
+              !palettes[i].locked,
               let from = palettes[i].colors.firstIndex(where: { $0.id == moving }),
               let to = palettes[i].colors.firstIndex(where: { $0.id == target }),
               from != to else { return }
@@ -229,6 +314,7 @@ final class Store: ObservableObject {
 
     func addColorToSelected() {
         guard let pid = selectedID else { return }
+        if isLocked(pid) { showToast("Palette is locked"); return }
         editor = EditorTarget(paletteID: pid, colorID: nil)
     }
 
@@ -241,6 +327,7 @@ final class Store: ObservableObject {
 
     func pickIntoSelected() {
         guard let pid = selectedID else { return }
+        if isLocked(pid) { showToast("Palette is locked"); return }
         pick { hex in
             self.addColor(to: pid, hex: hex, name: "")
             self.showToast("Added #\(hex)")
@@ -250,10 +337,7 @@ final class Store: ObservableObject {
     // MARK: Clipboard + toast
 
     func copy(_ hex: String) {
-        let text = copyFormat.string(for: hex)
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
-        showToast("Copied \(text)")
+        copy(hex, as: copyFormat)
     }
 
     func copy(_ hex: String, as format: CopyFormat) {
