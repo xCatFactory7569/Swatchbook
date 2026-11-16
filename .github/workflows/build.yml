@@ -1,0 +1,58 @@
+name: Build Swatchbook
+
+on:
+  workflow_dispatch:        # lets you press a "Run workflow" button
+  push:
+    branches: [main]        # also runs automatically when you change a file
+
+jobs:
+  build:
+    runs-on: macos-15-intel
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v4
+
+      - name: Show tool versions
+        run: |
+          sw_vers
+          swift --version
+
+      - name: Build (Intel, release)
+        run: swift build -c release --arch x86_64
+
+      - name: Create the .app bundle
+        run: |
+          APP="build/Swatchbook.app"
+          BIN_DIR="$(swift build -c release --arch x86_64 --show-bin-path)"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp "$BIN_DIR/Swatchbook" "$APP/Contents/MacOS/Swatchbook"
+          cat > "$APP/Contents/Info.plist" <<'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key><string>Swatchbook</string>
+            <key>CFBundleDisplayName</key><string>Swatchbook</string>
+            <key>CFBundleIdentifier</key><string>com.local.swatchbook</string>
+            <key>CFBundleExecutable</key><string>Swatchbook</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>1.0</string>
+            <key>CFBundleVersion</key><string>1</string>
+            <key>LSMinimumSystemVersion</key><string>13.0</string>
+            <key>LSApplicationCategoryType</key><string>public.app-category.graphics-design</string>
+            <key>NSHighResolutionCapable</key><true/>
+            <key>NSPrincipalClass</key><string>NSApplication</string>
+          </dict>
+          </plist>
+          EOF
+          codesign --force --deep --sign - "$APP"
+          echo "--- Minimum macOS version baked into the app: ---"
+          otool -l "$APP/Contents/MacOS/Swatchbook" | grep -A4 LC_BUILD_VERSION
+          ditto -c -k --keepParent "$APP" build/Swatchbook.zip
+
+      - name: Upload the app
+        uses: actions/upload-artifact@v4
+        with:
+          name: Swatchbook-for-Intel-Mac
+          path: build/Swatchbook.zip
+          retention-days: 90
