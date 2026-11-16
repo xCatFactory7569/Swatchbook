@@ -52,6 +52,8 @@ struct Palette: Identifiable, Codable, Hashable {
     var colors: [SwatchColor] = []
     var notes: String = ""
     var locked: Bool = false
+    var pinned: Bool = false
+    var lastOpened: Date? = nil
 
     init(name: String, colors: [SwatchColor] = [], notes: String = "", locked: Bool = false) {
         self.name = name
@@ -60,7 +62,7 @@ struct Palette: Identifiable, Codable, Hashable {
         self.locked = locked
     }
 
-    enum CodingKeys: String, CodingKey { case id, name, colors, notes, locked }
+    enum CodingKeys: String, CodingKey { case id, name, colors, notes, locked, pinned, lastOpened }
 
     // Custom decoding so palettes saved by the older version (without notes/locked) still load.
     init(from decoder: Decoder) throws {
@@ -70,6 +72,8 @@ struct Palette: Identifiable, Codable, Hashable {
         colors = try c.decodeIfPresent([SwatchColor].self, forKey: .colors) ?? []
         notes = try c.decodeIfPresent(String.self, forKey: .notes) ?? ""
         locked = try c.decodeIfPresent(Bool.self, forKey: .locked) ?? false
+        pinned = try c.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
+        lastOpened = try c.decodeIfPresent(Date.self, forKey: .lastOpened)
     }
 }
 
@@ -140,6 +144,63 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
     }
 }
 
+struct ShortcutSpec: Codable, Equatable {
+    var key: String                 // single lowercase character
+    var command = false
+    var shift = false
+    var option = false
+    var control = false
+
+    var keyEquivalent: KeyEquivalent? {
+        key.first.map { KeyEquivalent($0) }
+    }
+
+    var modifiers: EventModifiers {
+        var m: EventModifiers = []
+        if control { m.insert(.control) }
+        if option { m.insert(.option) }
+        if shift { m.insert(.shift) }
+        if command { m.insert(.command) }
+        return m
+    }
+
+    var display: String {
+        (control ? "⌃" : "") + (option ? "⌥" : "") + (shift ? "⇧" : "") + (command ? "⌘" : "") + key.uppercased()
+    }
+}
+
+enum ShortcutAction: String, CaseIterable, Identifiable, Codable {
+    case newPalette, addColor, eyedropper, commandPalette
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .newPalette: return "New palette"
+        case .addColor: return "Add color"
+        case .eyedropper: return "Pick color from screen"
+        case .commandPalette: return "Browse palettes"
+        }
+    }
+
+    var shortLabel: String {
+        switch self {
+        case .newPalette: return "palette"
+        case .addColor: return "color"
+        case .eyedropper: return "eyedropper"
+        case .commandPalette: return "browse"
+        }
+    }
+
+    static var defaults: [ShortcutAction: ShortcutSpec] {
+        [
+            .newPalette: ShortcutSpec(key: "n", command: true),
+            .addColor: ShortcutSpec(key: "n", command: true, option: true),
+            .eyedropper: ShortcutSpec(key: "e", command: true, option: true),
+            .commandPalette: ShortcutSpec(key: "k", command: true)
+        ]
+    }
+}
+
 struct EditorTarget: Identifiable {
     let id = UUID()
     let paletteID: UUID
@@ -150,13 +211,19 @@ struct EditorTarget: Identifiable {
 
 final class Store: ObservableObject {
     @Published var palettes: [Palette] = [] { didSet { save() } }
-    @Published var selectedID: UUID?
+    @Published var selectedID: UUID? {
+        didSet { markOpened(selectedID) }
+    }
     @Published var toast: String?
     @Published var editor: EditorTarget?
     @Published var pendingDelete: UUID?
     @Published var copyFormat: CopyFormat = .hex {
         didSet { UserDefaults.standard.set(copyFormat.rawValue, forKey: "copyFormat") }
     }
+    @Published var shortcuts: [ShortcutAction: ShortcutSpec] = ShortcutAction.defaults {
+        didSet { saveShortcuts() }
+    }
+    @Published var showPalette = false
     @Published var appearance: AppearanceMode = .dark {
         didSet {
             UserDefaults.standard.set(appearance.rawValue, forKey: "appearance")
@@ -184,6 +251,15 @@ final class Store: ObservableObject {
             appearance = a
         }
 
+        if let data = UserDefaults.standard.data(forKey: "shortcuts"),
+           let raw = try? JSONDecoder().decode([String: ShortcutSpec].self, from: data) {
+            var loaded: [ShortcutAction: ShortcutSpec] = [:]
+            for (k, v) in raw {
+                if let a = ShortcutAction(rawValue: k) { loaded[a] = v }
+            }
+            shortcuts = loaded
+        }
+
         if FileManager.default.fileExists(atPath: fileURL.path) {
             if let data = try? Data(contentsOf: fileURL),
                let decoded = try? JSONDecoder().decode([Palette].self, from: data) {
@@ -205,6 +281,79 @@ final class Store: ObservableObject {
 
     func applyAppearance() {
         NSApplication.shared.appearance = appearance.nsAppearance
+    }
+
+    // MARK: Shortcuts
+
+    /// Assign (or clear, with nil) a shortcut. If another action already uses it, that one is cleared.
+    func setShortcut(_ spec: ShortcutSpec?, for action: ShortcutAction) {
+        var updated = shortcuts
+        if let spec = spec {
+            for (other, existing) in shortcuts where existing == spec && other != action {
+                updated[other] = nil
+            }
+            updated[action] = spec
+        } else {
+            updated[action] = nil
+        }
+        shortcuts = updated
+    }
+
+    func resetShortcuts() {
+        shortcuts = ShortcutAction.defaults
+    }
+
+    private func saveShortcuts() {
+        var raw: [String: ShortcutSpec] = [:]
+        for (action, spec) in shortcuts { raw[action.rawValue] = spec }
+        if let data = try? JSONEncoder().encode(raw) {
+            UserDefaults.standard.set(data, forKey: "shortcuts")
+        }
+    }
+
+    var shortcutHint: String {
+        ShortcutAction.allCases.compactMap { action in
+            shortcuts[action].map { "\($0.display) \(action.shortLabel)" }
+        }.joined(separator: "  ·  ")
+    }
+
+    func helpText(_ text: String, _ action: ShortcutAction) -> String {
+        if let s = shortcuts[action] { return "\(text) (\(s.display))" }
+        return text
+    }
+
+    // MARK: Recents / pinning (used by the command palette)
+
+    private func markOpened(_ id: UUID?) {
+        guard let id = id, let i = palettes.firstIndex(where: { $0.id == id }) else { return }
+        palettes[i].lastOpened = Date()
+    }
+
+    func togglePin(_ id: UUID) {
+        guard let i = palettes.firstIndex(where: { $0.id == id }) else { return }
+        palettes[i].pinned.toggle()
+    }
+
+    /// Current palette first, then pinned, then most recently opened, then original order.
+    var rankedPalettes: [Palette] {
+        let indexed = Array(palettes.enumerated())
+        let sorted = indexed.sorted { a, b in
+            let aCurrent = a.element.id == selectedID
+            let bCurrent = b.element.id == selectedID
+            if aCurrent != bCurrent { return aCurrent }
+            if a.element.pinned != b.element.pinned { return a.element.pinned }
+            let aDate = a.element.lastOpened ?? Date.distantPast
+            let bDate = b.element.lastOpened ?? Date.distantPast
+            if aDate != bDate { return aDate > bDate }
+            return a.offset < b.offset
+        }
+        return sorted.map { $0.element }
+    }
+
+    func createPalette(named name: String) {
+        let p = Palette(name: name)
+        palettes.append(p)
+        selectedID = p.id
     }
 
     private func save() {
