@@ -371,11 +371,7 @@ struct PaletteRow: View {
                     .foregroundColor(Theme.text2)
             }
             Spacer()
-            if palette.locked {
-                Image(systemName: "lock.fill")
-                    .font(.system(size: 10))
-                    .foregroundColor(Theme.text2)
-            }
+            LockToggle(palette: palette)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 7)
@@ -1285,12 +1281,8 @@ struct CompactPaletteRow: View {
                 Text(palette.name.isEmpty ? "Untitled" : palette.name)
                     .font(.system(size: 13, weight: .semibold))
                     .lineLimit(1)
-                if palette.locked {
-                    Image(systemName: "lock.fill")
-                        .font(.system(size: 9))
-                        .foregroundColor(Theme.text2)
-                }
                 Spacer()
+                LockToggle(palette: palette)
             }
             .contentShape(Rectangle())
             .onTapGesture { store.selectedID = palette.id }
@@ -1343,5 +1335,27 @@ struct CompactSwatch: View {
                 Button("Copy RGB") { store.copy(color.hex, as: .rgb) }
                 Button("Copy HSL") { store.copy(color.hex, as: .hsl) }
             }
+    }
+}
+
+
+// MARK: - Quick lock / unlock icon (sidebar, compact view, menu bar panel)
+
+struct LockToggle: View {
+    let palette: Palette
+    @EnvironmentObject var store: Store
+    @State private var hover = false
+
+    var body: some View {
+        Button { store.toggleLock(palette.id) } label: {
+            Image(systemName: palette.locked ? "lock.fill" : "lock.open")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(Color.primary.opacity(palette.locked || hover ? 0.7 : 0.3))
+                .frame(width: 24, height: 20)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+        .help(palette.locked ? "Unlock this palette" : "Lock this palette")
     }
 }
