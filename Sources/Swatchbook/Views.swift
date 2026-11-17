@@ -175,6 +175,9 @@ struct GeneralSettings: View {
 
             Toggle("Keep window on top of other apps", isOn: $store.keepOnTop)
             Toggle("Suggest color names automatically", isOn: $store.autoNames)
+            Toggle("Show Swatchbook in the menu bar", isOn: $store.menuBarEnabled)
+            Toggle("Add colors picked from the menu bar to the selected palette", isOn: $store.menuBarAddsColor)
+                .disabled(!store.menuBarEnabled)
         }
         .padding(28)
     }
@@ -1270,6 +1273,7 @@ struct CompactView: View {
 struct CompactPaletteRow: View {
     let palette: Palette
     let isCurrent: Bool
+    var showsAddColor = true
     @EnvironmentObject var store: Store
 
     var body: some View {
@@ -1308,9 +1312,11 @@ struct CompactPaletteRow: View {
             .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.stroke))
         }
         .contextMenu {
-            Button("Add Color…") {
-                store.selectedID = palette.id
-                store.addColorToSelected()
+            if showsAddColor {
+                Button("Add Color…") {
+                    store.selectedID = palette.id
+                    store.addColorToSelected()
+                }
             }
             Button(palette.locked ? "Unlock" : "Lock") { store.toggleLock(palette.id) }
             Button("Duplicate") { store.duplicatePalette(palette.id) }
