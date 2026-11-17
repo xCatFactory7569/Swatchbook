@@ -278,6 +278,17 @@ final class Store: ObservableObject {
     }
     @Published var lastBackup: Date?
 
+    // Menu bar item
+    @Published var menuBarEnabled = true {
+        didSet {
+            UserDefaults.standard.set(menuBarEnabled, forKey: "menuBarEnabled")
+            menuBar?.setVisible(menuBarEnabled)
+        }
+    }
+    @Published var menuBarAddsColor = true {
+        didSet { UserDefaults.standard.set(menuBarAddsColor, forKey: "menuBarAddsColor") }
+    }
+
     weak var undoManager: UndoManager?
     weak var mainWindow: NSWindow?
 
@@ -289,6 +300,7 @@ final class Store: ObservableObject {
     private var lastColorSignature = ""
     private var expandedSize: NSSize?
     private var pasteMonitor: Any?
+    private var menuBar: MenuBarController?
 
     init() {
         let base = FileManager.default
@@ -303,6 +315,8 @@ final class Store: ObservableObject {
         if d.object(forKey: "autoNames") != nil { autoNames = d.bool(forKey: "autoNames") }
         if d.object(forKey: "syncSystemColors") != nil { syncSystemColors = d.bool(forKey: "syncSystemColors") }
         keepOnTop = d.bool(forKey: "keepOnTop")
+        if d.object(forKey: "menuBarEnabled") != nil { menuBarEnabled = d.bool(forKey: "menuBarEnabled") }
+        if d.object(forKey: "menuBarAddsColor") != nil { menuBarAddsColor = d.bool(forKey: "menuBarAddsColor") }
         backupEnabled = d.bool(forKey: "backupEnabled")
         backupFolderPath = d.string(forKey: "backupFolder") ?? ""
         let keep = d.integer(forKey: "backupKeep")
@@ -333,6 +347,11 @@ final class Store: ObservableObject {
             self?.runBackupIfNeeded()
         }
         DispatchQueue.main.async { [weak self] in self?.syncColorLists() }
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.menuBar = MenuBarController(store: self)
+            self.menuBar?.setVisible(self.menuBarEnabled)
+        }
     }
 
     func applyAppearance() {
@@ -568,6 +587,38 @@ final class Store: ObservableObject {
             if NSApp.keyWindow?.firstResponder is NSTextView { return event }   // normal text paste
             return self.pasteColorsFromClipboard() ? nil : event
         }
+    }
+
+    // MARK: Menu bar actions
+
+    /// Eyedropper started from the menu bar: copies the color and (optionally) adds it to the selected palette.
+    func pickFromMenuBar() {
+        pick { [weak self] hex in
+            guard let self = self else { return }
+            self.copy(hex)
+            if self.menuBarAddsColor, let pid = self.selectedID, !self.isLocked(pid) {
+                self.addColor(to: pid, hex: hex, name: "")
+            }
+            self.menuBar?.flash(hex)
+        }
+    }
+
+    /// Brings the main window forward, reopening it if it was closed.
+    func showMainWindow() {
+        NSApp.activate(ignoringOtherApps: true)
+        if let w = mainWindow, w.isVisible || w.isMiniaturized {
+            if w.isMiniaturized { w.deminiaturize(nil) }
+            w.makeKeyAndOrderFront(nil)
+        } else {
+            // Opening the app again while it runs asks it to show a window.
+            NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL,
+                                               configuration: NSWorkspace.OpenConfiguration()) { _, _ in }
+        }
+    }
+
+    func showSettings() {
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
     }
 
     // MARK: Clipboard + toast
