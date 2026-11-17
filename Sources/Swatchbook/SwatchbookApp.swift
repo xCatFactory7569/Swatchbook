@@ -2,7 +2,11 @@ import SwiftUI
 import AppKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    /// With the menu bar item on, closing the window keeps the app running in the menu bar.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        let menuBarOn = UserDefaults.standard.object(forKey: "menuBarEnabled") as? Bool ?? true
+        return !menuBarOn
+    }
 }
 
 @main
